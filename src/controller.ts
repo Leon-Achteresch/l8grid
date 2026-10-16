@@ -461,7 +461,7 @@ export class GridController {
       const left = clamp(x, 0, this.width - width);
       const top = clamp(y, 0, session.floor * stepY);
       this.write(session.node, left, top, width, height);
-      preview = session.drag(left / stepX, top / stepY);
+      preview = session.drag(x / stepX, top / stepY);
     } else {
       const [ex, ey] = EDGES.get(session.edge)!;
       const minW = Math.max(1, origin.minW ?? 1);

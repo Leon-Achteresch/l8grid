@@ -461,3 +461,21 @@ test("the top edge grows only into free space and stops at the tile above", () =
   expect(committed("a")).toEqual({ x: 0, y: 0, w: 4, h: 2 });
   expect(changes).toHaveLength(1);
 });
+
+test("a pointer dragged past the side of the grid puts the tile flush against that edge", () => {
+  const { item, committed } = setup({ cols: 60, rowHeight: 20, gap: 8 }, [
+    { id: "a", x: 0, y: 0, w: 20, h: 8 },
+    { id: "b", x: 20, y: 0, w: 30, h: 12 },
+    { id: "c", x: 50, y: 0, w: 10, h: 4 },
+    { id: "d", x: 0, y: 12, w: 60, h: 8 },
+  ]);
+  down(item("a"), 10, 10);
+  for (let i = 1; i <= 40; i++) move(10 + i * 35, 10);
+  up(1410, 10);
+  expect(committed("a")).toMatchObject({ x: 40, y: 0 });
+  const left = 40 * (1200 + 8) / 60 + 10;
+  down(item("a"), left, 10);
+  for (let i = 1; i <= 40; i++) move(left - i * 35, 10);
+  up(left - 1400, 10);
+  expect(committed("a")).toMatchObject({ x: 0, y: 0 });
+});

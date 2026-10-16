@@ -1,6 +1,6 @@
 {
   "name": "l8grid",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Drag-and-drop, resizable, keyboard-accessible grid layout for React",
   "license": "MIT",
   "repository": {

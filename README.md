@@ -79,14 +79,17 @@ interface GridItem {
 ## Interaction
 
 - The whole tile is draggable. With `handle`, only elements with `data-l8-handle` start a move. `draggable={false}` or `draggable: false` on an item turns moving off.
-- While dragging, every frame scores the nearby slots: how far the slot is from where you hold the tile (relative to its size), how much other tiles would have to move, and how many gaps would be left behind. The cheapest slot wins:
-  - Free space is used directly.
-  - A neighbour is displaced once the tile is more than halfway over it. Displaced tiles move into the space the dragged tile left (swap), so rows stay filled.
-  - Once a tile is dragged more than halfway out of its slot it does not snap back; it takes the cheapest slot in the direction you drag, even if other tiles have to make room. It returns only when you bring it back to within about a third of its size.
+- While dragging, every frame scores the nearby slots: how far the slot is from where you hold the tile (relative to its size) and how much other tiles would have to move. The cheapest slot wins; the gaps a slot would leave behind only decide between slots that are equally close:
+  - Free space is used directly. In free space the placeholder follows the pointer column by column, whatever the size of the tile, so a free slot under the tile is always reachable. Being lifted by gravity does not count as moving away from the pointer.
+  - A neighbour is displaced once the tile is more than halfway over it. Displaced tiles move into the space the dragged tile left (swap), so rows stay filled. A displaced tile that is wider than that space overhangs on the side it comes from.
+  - Dragged sideways along a row, the tile behaves like an item in a sortable list: every tile it passes moves one place towards where the dragged tile came from, whatever their widths. The result is the same as pressing the arrow key repeatedly, and dragging back restores the order.
+  - With the pointer past the left or right edge of the grid, the tile goes flush against that edge as long as nothing has to be pushed down for it, even where the remaining space is less than half a tile. The same applies to the top edge when dragging upwards.
+  - Once a tile is dragged more than halfway out of its slot it does not snap back; it takes the cheapest slot in the direction you drag, even if other tiles have to make room. It returns only when you bring it back a quarter column (or row) past the halfway point.
   - The placeholder never moves away from the pointer: a slot is only taken if it is at least as close to the pointer as the original slot on both axes (gravity may still lift it).
   - Dragged across a larger tile, the tile jumps to the far side of it once you pass its middle.
-  - Thresholds have hysteresis, so a hand resting on a boundary does not make the layout flicker.
+  - Thresholds have a hysteresis of about a quarter column or row, independent of the tile size, so a hand resting on a boundary does not make the layout flicker.
   - While the tile stays within half its height of its row, nothing is pushed down. Inserting into another row, which pushes that column down, only happens when you drag the tile there.
+  - The result does not depend on how fast you drag: a quick flick along a row ends in the same place as a slow drag.
   - The tile can be dragged into the empty row below all other tiles.
 - Inputs, textareas, selects, buttons, links, `contenteditable` and anything inside `[data-l8-nodrag]` never start a drag.
 - Clicks on tile content keep working; the click that ends a drag is swallowed.

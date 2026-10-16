@@ -17,9 +17,9 @@ function seeded(seed: number) {
   };
 }
 
-function randomLayout(count: number, cols: number, random: () => number): GridItem[] {
+function randomLayout(count: number, cols: number, random: () => number, maxW = 4): GridItem[] {
   const items = Array.from({ length: count }, (_, i) => {
-    const w = 1 + Math.floor(random() * 4);
+    const w = 1 + Math.floor(random() * maxW);
     return { id: `i${i}`, x: Math.floor(random() * (cols - w + 1)), y: Math.floor(random() * count), w, h: 1 + Math.floor(random() * 3) };
   });
   return resolveLayout(items, { cols, compaction: "vertical" });
@@ -264,27 +264,36 @@ test("dragging into another row inserts there and pushes that column down", () =
 
 test("fuzz: fractional drags stay valid and never push tiles down while moving sideways", () => {
   const random = seeded(11);
-  for (const compaction of ["vertical", "none"] as const) {
-    const options = { cols: 12, compaction };
-    let layout = randomLayout(40, 12, random);
-    for (let step = 0; step < 400; step++) {
-      const item = layout[Math.floor(random() * layout.length)]!;
-      const sideways = random() < 0.5;
-      const fx = random() * (12 - item.w);
-      const fy = Math.max(0, sideways ? item.y + (random() - 0.5) * 0.98 * item.h : item.y + (random() - 0.5) * 12);
-      const next = dragItem(layout, item.id, options)(fx, fy);
-      expect(overlaps(next)).toBeUndefined();
-      for (const placed of next) expect(placed.x + placed.w).toBeLessThanOrEqual(12);
-      if (compaction === "vertical") expect(compactVertical(next, 12)).toEqual(next);
-      if (sideways)
-        for (let i = 0; i < next.length; i++) {
-          const before = layout[i]!;
-          const after = next[i]!;
-          if (before !== item) expect(after.y + after.h).toBeLessThanOrEqual(Math.max(before.y + before.h, item.y + item.h));
+  for (const [cols, maxW] of [
+    [12, 4],
+    [60, 20],
+  ] as const)
+    for (const compaction of ["vertical", "none"] as const) {
+      const options = { cols, compaction };
+      let layout = randomLayout(40, cols, random, maxW);
+      for (let step = 0; step < 400; step++) {
+        const item = layout[Math.floor(random() * layout.length)]!;
+        const sideways = random() < 0.5;
+        const fx = random() * (cols - item.w);
+        const fy = Math.max(0, sideways ? item.y + (random() - 0.5) * 0.98 * item.h : item.y + (random() - 0.5) * 12);
+        const drag = dragItem(layout, item.id, options);
+        const steps = 1 + Math.floor(random() * 8);
+        let next = layout;
+        for (let i = 1; i <= steps; i++) {
+          next = drag(item.x + ((fx - item.x) * i) / steps, item.y + ((fy - item.y) * i) / steps);
+          expect(overlaps(next)).toBeUndefined();
+          for (const placed of next) expect(placed.x + placed.w).toBeLessThanOrEqual(cols);
+          if (compaction === "vertical") expect(compactVertical(next, cols)).toEqual(next);
+          if (sideways)
+            for (let j = 0; j < next.length; j++) {
+              const before = layout[j]!;
+              const after = next[j]!;
+              if (before !== item) expect(after.y + after.h).toBeLessThanOrEqual(Math.max(before.y + before.h, item.y + item.h));
+            }
         }
-      layout = next;
+        layout = next;
+      }
     }
-  }
 });
 
 test("a taller neighbour never swaps into a sideways-dragged tile's slot if it would stick out below", () => {
@@ -376,4 +385,93 @@ test("perf: nudging the lowest of 1000 items stays instant", () => {
   const elapsed = performance.now() - start;
   console.info(`nudge 1000 items, bottom ${layoutBottom(layout)}: ${elapsed.toFixed(2)} ms`);
   expect(elapsed).toBeLessThan(50);
+});
+
+const wide: LayoutOptions = { cols: 60, compaction: "vertical" };
+
+const row = (widths: number[], h: number): GridItem[] => {
+  let x = 0;
+  return widths.map((w, i) => ({ id: `k${i}`, x: (x += w) - w, y: 0, w, h }));
+};
+
+const spots = (layout: Layout) => layout.map(({ id, x, y }) => ({ id, x, y }));
+
+function sweep(drag: (x: number, y: number) => GridItem[], from: number, to: number, y: number, visit?: (next: GridItem[], fx: number) => void): GridItem[] {
+  const step = from < to ? 0.25 : -0.25;
+  let next!: GridItem[];
+  for (let i = 0; i <= Math.abs(to - from) / 0.25; i++) {
+    const fx = from + i * step;
+    next = drag(fx, y);
+    visit?.(next, fx);
+  }
+  return next;
+}
+
+test("a lone tile reaches both edges", () => {
+  const layout = [{ id: "a", x: 0, y: 0, w: 30, h: 8 }];
+  const drag = dragItem(layout, "a", wide);
+  expect(at(sweep(drag, 0, 30, 0), "a").x).toBe(30);
+  expect(at(sweep(drag, 30, 0, 0), "a").x).toBe(0);
+});
+
+test("in free space the placeholder stays within a column of the pointer whatever the tile size", () => {
+  for (const w of [4, 8, 20, 30]) {
+    const drag = dragItem([{ id: "a", x: 0, y: 0, w, h: 4 }], "a", wide);
+    const follows = (next: GridItem[], fx: number) => expect(Math.abs(at(next, "a").x - Math.round(fx))).toBeLessThanOrEqual(1);
+    sweep(drag, 0, 60 - w, 0, follows);
+    sweep(drag, 60 - w, 0, 0, follows);
+  }
+});
+
+test("dragging along a row of mixed widths shifts the crossed tiles like a sortable list", () => {
+  const layout = row([9, 9, 9, 9, 8, 8, 8], 3);
+  const drag = dragItem(layout, "k0", wide);
+  const right = sweep(drag, 0, 51, 0);
+  expect(spots(right)).toEqual([0, 9, 18, 27, 35, 43].map((x, i) => ({ id: `k${i + 1}`, x, y: 0 })).concat({ id: "k0", x: 51, y: 0 }).sort((a, b) => a.id.localeCompare(b.id)));
+  let nudged: GridItem[] = layout;
+  for (let i = 0; i < 6; i++) nudged = nudgeItem(nudged, "k0", { x: 1 }, wide)!;
+  expect(spots(right)).toEqual(spots(nudged));
+  expect(spots(dragItem(layout, "k0", wide)(100, 0))).toEqual(spots(right));
+  expect(spots(sweep(drag, 51, 0, 0))).toEqual(spots(layout));
+});
+
+test("a tile reaches the free columns at the end of a full row", () => {
+  const next = sweep(dragItem(row([8, 8, 8, 8, 8, 8, 8], 3), "k0", wide), 0, 52, 0);
+  expect(at(next, "k0").x).toBe(52);
+  expect(next.every(({ y }) => y === 0)).toBe(true);
+});
+
+test("a tile crosses neighbours of different sizes up to the edge", () => {
+  const layout = [
+    { id: "a", x: 0, y: 0, w: 20, h: 8 },
+    { id: "b", x: 20, y: 0, w: 30, h: 12 },
+    { id: "c", x: 50, y: 0, w: 10, h: 4 },
+    { id: "d", x: 0, y: 12, w: 60, h: 8 },
+  ];
+  const next = sweep(dragItem(layout, "a", wide), 0, 40, 0);
+  expect(at(next, "a")).toMatchObject({ x: 40, y: 0 });
+  expect(at(next, "b").y).toBe(0);
+  expect(at(next, "c").y).toBe(0);
+  expect(overlaps(next)).toBeUndefined();
+  expect(at(next, "d").y).toBeGreaterThanOrEqual(12);
+});
+
+test("a tile in a lower row follows the pointer to the edge even if that leaves a gap", () => {
+  const layout = [
+    { id: "a", x: 0, y: 0, w: 20, h: 8 },
+    { id: "b", x: 20, y: 0, w: 20, h: 8 },
+    { id: "c", x: 0, y: 8, w: 30, h: 8 },
+  ];
+  expect(at(sweep(dragItem(layout, "c", wide), 0, 30, 8), "c")).toMatchObject({ x: 30, y: 8 });
+});
+
+test("a tile dragged past the top edge goes up to the first row when nothing has to be pushed down", () => {
+  const layout = [
+    { id: "wide", x: 0, y: 0, w: 6, h: 1 },
+    { id: "a", x: 0, y: 1, w: 4, h: 2 },
+  ];
+  const next = dragItem(layout, "a", vertical)(0, 0);
+  expect(at(next, "a")).toMatchObject({ x: 0, y: 0 });
+  expect(at(next, "wide")).toMatchObject({ x: 0, y: 2 });
+  expect(nudgeItem(layout, "a", { y: -1 }, vertical)).toEqual(next);
 });
