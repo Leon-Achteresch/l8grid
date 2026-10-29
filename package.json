@@ -1,6 +1,6 @@
 {
   "name": "l8grid",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Drag-and-drop, resizable, keyboard-accessible grid layout for React",
   "license": "MIT",
   "repository": {
@@ -17,7 +17,9 @@
     "accessible"
   ],
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "*.css"
+  ],
   "files": [
     "dist"
   ],
@@ -35,25 +37,36 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./styles.css": "./dist/styles.css",
     "./package.json": "./package.json"
   },
   "scripts": {
     "dev": "vite playground",
-    "build": "tsdown",
+    "build": "tsdown && node scripts/write-styles.mjs",
     "test": "vitest",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run build"
+    "lint": "oxlint src playground e2e",
+    "size": "node scripts/check-size.mjs",
+    "prepublishOnly": "npm run typecheck && npm run lint && npm test -- --run && npm run test:compat && npm run test:fuzz && npm run build && npm run size",
+    "test:compat": "vitest --run --config vitest.slow.config.ts src/compat.test.tsx",
+    "build:demo": "vite build playground --base ./ --outDir ../site --emptyOutDir",
+    "test:fuzz": "vitest --run --config vitest.slow.config.ts src/fuzz.test.tsx"
   },
   "peerDependencies": {
     "react": ">=18",
     "react-dom": ">=18"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "jsdom": "^30.1.2",
+    "l8grid-v021": "npm:l8grid@^0.2.1",
+    "oxlint": "^1.90.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tsdown": "^0.23.1",

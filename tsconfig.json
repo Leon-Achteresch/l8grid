@@ -11,7 +11,7 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["vitest/globals", "vite/client"]
+    "types": ["vitest/globals", "vite/client", "node"]
   },
-  "include": ["src", "playground"]
+  "include": ["src", "playground", "e2e", "*.config.ts"]
 }

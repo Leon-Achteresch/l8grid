@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Checks (React ${{ matrix.react }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        react: [18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Use React ${{ matrix.react }}
+        if: matrix.react == 18
+        run: npm i --no-save react@18 react-dom@18
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --run
+      - name: Compare behaviour with the published 0.2.1
+        run: npm run test:compat
+      - name: Randomized tests of the 0.3 options
+        run: npm run test:fuzz
+      - run: npm run build
+      - run: npm run size
+      - run: npx playwright install --with-deps chromium
+      - name: Browser tests (Chromium)
+        run: npm run test:e2e
+        env:
+          E2E_BROWSERS: chromium
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-react-${{ matrix.react }}
+          path: test-results
+          retention-days: 7
+
+  browsers:
+    name: Browser tests (Firefox, WebKit)
+    runs-on: ubuntu-latest
+    # Informational until these engines have run green for a while.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps firefox webkit
+      - run: npm run test:e2e
+        env:
+          E2E_BROWSERS: firefox,webkit

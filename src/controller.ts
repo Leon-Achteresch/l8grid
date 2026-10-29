@@ -1,4 +1,6 @@
-import { clampItem, dragItem, layoutBottom, nudgeItem, resolveLayout, sameLayout, type Compaction, type GridItem, type Layout } from "./layout";
+import { nudgeFree, placeFree, setFree } from "./free";
+import { STYLES } from "./styles";
+import { clampItem, dragItem, layoutBottom, nudgeItem, resolveLayout, sameLayout, type Compaction, type GridItem, type Layout, type Rect } from "./layout";
 
 export type ResizeHandle = "n" | "e" | "s" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -12,11 +14,50 @@ export interface GridOptions {
   handle: boolean;
   draggable: boolean;
   resizable: boolean;
+  /** Changes that would make the layout taller than this many rows are not taken. */
+  maxRows?: number;
+  /** Moving or resizing never pushes other items aside or down; the item only goes where there is room. */
+  preventCollision?: boolean;
+  /** Items may overlap: nothing is pushed or compacted, items are only clamped to the grid. */
+  allowOverlap?: boolean;
+  /** `"rtl"` mirrors the grid: column 0 is on the right. */
+  direction?: "ltr" | "rtl";
+  /** `"grab"`: Space or Enter picks a tile up, arrow keys move it, Space or Enter drops it, Escape cancels. */
+  keyboard?: "instant" | "grab";
+}
+
+export type Announcement = "grabbed" | "moved" | "dropped" | "cancelled" | "blocked";
+
+export type DropItem = Omit<GridItem, "id" | "x" | "y"> & { id?: string };
+
+export interface GridHooks {
+  onInteractionStart?: (id: string, kind: ChangeKind) => void;
+  onPreviewChange?: (layout: GridItem[], id: string, kind: ChangeKind) => void;
+  onInteractionEnd?: (id: string, kind: ChangeKind, committed: boolean) => void;
+  announce?: (type: Announcement, id: string, item: GridItem) => void;
+  dropItem?: (event: DragEvent) => DropItem | false | null | undefined;
+  onDrop?: (layout: GridItem[], item: GridItem, event: DragEvent) => void;
+}
+
+export const DROP_ID = "__l8-drop__";
+
+interface Grab {
+  id: string;
+  node: HTMLElement;
+  kind: ChangeKind;
+  preview: GridItem[];
+}
+
+interface Drop {
+  key: string;
+  item: GridItem;
+  preview: GridItem[];
 }
 
 interface Session {
   kind: ChangeKind;
   edge: string;
+  dir: readonly [number, number];
   state: "pending" | "active" | "done";
   item: GridItem;
   node: HTMLElement;
@@ -64,33 +105,6 @@ const ARROWS: Record<string, [number, number]> = {
   ArrowDown: [0, 1],
 };
 
-const STYLES = `
-.l8-grid{position:relative;box-sizing:content-box;--l8-handle:16px}
-.l8-item{position:absolute;top:0;left:0;box-sizing:border-box;container-type:size;touch-action:manipulation;-webkit-touch-callout:none}
-:where(.l8-grid:not([data-l8-handle-mode])>.l8-item:not([data-l8-static],[data-l8-nodrag])),:where(.l8-grid[data-l8-handle-mode]>.l8-item:not([data-l8-nodrag]) [data-l8-handle]){cursor:grab}
-.l8-grid[data-l8-handle-mode] [data-l8-handle],.l8-grid [data-l8-resize]{touch-action:none}
-.l8-grid[data-l8-animate] .l8-item,.l8-grid[data-l8-animate] .l8-placeholder{transition:transform .22s cubic-bezier(.2,.8,.2,1),width .22s cubic-bezier(.2,.8,.2,1),height .22s cubic-bezier(.2,.8,.2,1)}
-.l8-grid .l8-item[data-l8-active]{transition:none;z-index:3;will-change:transform;-webkit-user-select:none;user-select:none}
-:where(.l8-grid .l8-item[data-l8-active=move]){cursor:grabbing}
-.l8-resize[data-l8-resize=n],.l8-resize[data-l8-resize=s],.l8-item[data-l8-edge=n],.l8-item[data-l8-edge=s]{cursor:ns-resize}
-.l8-resize[data-l8-resize=e],.l8-resize[data-l8-resize=w],.l8-item[data-l8-edge=e],.l8-item[data-l8-edge=w]{cursor:ew-resize}
-.l8-resize[data-l8-resize=ne],.l8-resize[data-l8-resize=sw],.l8-item[data-l8-edge=ne],.l8-item[data-l8-edge=sw]{cursor:nesw-resize}
-.l8-resize[data-l8-resize=nw],.l8-resize[data-l8-resize=se],.l8-item[data-l8-edge=nw],.l8-item[data-l8-edge=se]{cursor:nwse-resize}
-.l8-item[data-l8-settling]{z-index:2}
-.l8-placeholder{position:absolute;top:0;left:0;box-sizing:border-box;pointer-events:none;display:none}
-:where(.l8-placeholder){border-radius:6px;background:rgb(128 128 128/.18)}
-.l8-placeholder[data-l8-visible]{display:block}
-.l8-resize{position:absolute;width:var(--l8-handle);height:var(--l8-handle)}
-.l8-resize:is([data-l8-resize=n],[data-l8-resize=s]){left:var(--l8-handle);right:var(--l8-handle);width:auto;height:calc(var(--l8-handle)/2)}
-.l8-resize:is([data-l8-resize=e],[data-l8-resize=w]){top:var(--l8-handle);bottom:var(--l8-handle);width:calc(var(--l8-handle)/2);height:auto}
-.l8-resize:is([data-l8-resize=n],[data-l8-resize=ne],[data-l8-resize=nw]){top:0}
-.l8-resize:is([data-l8-resize=s],[data-l8-resize=se],[data-l8-resize=sw]){bottom:0}
-.l8-resize:is([data-l8-resize=e],[data-l8-resize=ne],[data-l8-resize=se]){right:0}
-.l8-resize:is([data-l8-resize=w],[data-l8-resize=nw],[data-l8-resize=sw]){left:0}
-@media (pointer:coarse){.l8-grid{--l8-handle:28px}}
-.l8-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-@media (prefers-reduced-motion:reduce){.l8-grid .l8-item,.l8-grid .l8-placeholder{transition:none}}
-`;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
 
@@ -103,6 +117,21 @@ function scrollParent(node: HTMLElement): HTMLElement | null {
 }
 
 const px = (value: string) => parseFloat(value) || 0;
+
+const toward = (value: number, goal: number) => value + Math.sign(goal - value);
+
+const sameRect = (a: GridItem, b: GridItem) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+
+// One cell closer to `origin` on every edge that differs.
+function shrinkTowards(item: GridItem, origin: GridItem): GridItem {
+  const x0 = toward(item.x, origin.x);
+  const y0 = toward(item.y, origin.y);
+  const x1 = toward(item.x + item.w, origin.x + origin.w);
+  const y1 = toward(item.y + item.h, origin.y + origin.h);
+  return { ...item, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+const mirror = (edge: string) => edge.replace(/[ew]/, (side) => (side === "e" ? "w" : "e"));
 
 function injectStyles(doc: Document): void {
   if (doc.getElementById("l8grid-styles")) return;
@@ -135,21 +164,59 @@ export class GridController {
   private animateId = 0;
   private settleId = 0;
   private settling: (() => void) | null = null;
+  private grab: Grab | null = null;
+  private drop: Drop | null = null;
+  private listeners = new Map<string, Set<() => void>>();
 
   constructor(
     private options: GridOptions,
     private readonly onCommit: (layout: GridItem[], id: string, kind: ChangeKind) => void,
+    private hooks: GridHooks = {},
   ) {}
+
+  setHooks(hooks: GridHooks): void {
+    this.hooks = hooks;
+  }
+
+  /** The committed item with this id, as last laid out by the grid. */
+  getItem(id: string): GridItem | undefined {
+    return this.byId.get(id);
+  }
+
+  /** The committed layout, resolved by the grid. */
+  getLayout(): GridItem[] {
+    return this.layout;
+  }
+
+  /** Calls `listener` whenever the committed item with this id changes. Returns the unsubscribe function. */
+  subscribe(id: string, listener: () => void): () => void {
+    let set = this.listeners.get(id);
+    if (!set) this.listeners.set(id, (set = new Set()));
+    set.add(listener);
+    return () => {
+      set.delete(listener);
+      if (!set.size && this.listeners.get(id) === set) this.listeners.delete(id);
+    };
+  }
+
+  private notify(before: Map<string, GridItem>): void {
+    for (const [id, set] of this.listeners) if (before.get(id) !== this.byId.get(id)) for (const listener of set) listener();
+  }
 
   mount(root: HTMLElement, placeholder: HTMLElement): () => void {
     injectStyles(root.ownerDocument);
     this.root = root;
     this.placeholder = placeholder;
     this.measure();
+    root.setAttribute("data-l8-ready", "");
     root.addEventListener("pointerdown", this.onPointerDown);
     root.addEventListener("keydown", this.onKeyDown);
     root.addEventListener("touchmove", this.onTouchMove, { passive: false });
     root.addEventListener("contextmenu", this.onContextMenu);
+    root.addEventListener("focusout", this.onFocusOut);
+    root.addEventListener("dragover", this.onDragOver);
+    root.addEventListener("dragleave", this.onDragLeave);
+    root.addEventListener("drop", this.onDrop);
     if (typeof ResizeObserver !== "undefined") {
       this.observer = new ResizeObserver(() => {
         if (this.measure()) this.instant(() => this.repaint());
@@ -164,27 +231,63 @@ export class GridController {
   private unmount(): void {
     this.end(false);
     this.flush();
+    this.release(false, true);
+    this.leaveDrop();
     this.observer?.disconnect();
     this.root?.removeEventListener("pointerdown", this.onPointerDown);
     this.root?.removeEventListener("keydown", this.onKeyDown);
     this.root?.removeEventListener("touchmove", this.onTouchMove);
     this.root?.removeEventListener("contextmenu", this.onContextMenu);
+    this.root?.removeEventListener("focusout", this.onFocusOut);
+    this.root?.removeEventListener("dragover", this.onDragOver);
+    this.root?.removeEventListener("dragleave", this.onDragLeave);
+    this.root?.removeEventListener("drop", this.onDrop);
+    this.root?.removeAttribute("data-l8-ready");
     cancelAnimationFrame(this.animateId);
     this.root = this.placeholder = this.observer = null;
   }
 
   setOptions(options: GridOptions): void {
-    const relayout = options.cols !== this.options.cols || options.compaction !== this.options.compaction;
+    const relayout = options.cols !== this.options.cols || options.compaction !== this.options.compaction || !options.allowOverlap !== !this.options.allowOverlap;
     this.options = options;
     this.syncHandleMode();
-    if (relayout) this.apply(resolveLayout(this.source, options));
+    if (relayout) this.apply(this.resolve(this.source));
     else this.repaint();
   }
 
   setLayout(layout: Layout): void {
     if (layout === this.source) return;
     this.source = layout;
-    this.apply(resolveLayout(layout, this.options));
+    this.apply(this.resolve(layout));
+  }
+
+  private resolve(layout: Layout, active?: GridItem): GridItem[] {
+    if (!this.options.allowOverlap) return resolveLayout(layout, this.options, active);
+    const placed = placeFree(layout, this.options.cols);
+    return active ? setFree(placed, active, this.options.cols) : placed;
+  }
+
+  private get rtl(): boolean {
+    return this.options.direction === "rtl";
+  }
+
+  // `maxRows` and `preventCollision`: whether a proposed layout may replace `base`.
+  private accepts(next: Layout, id: string, base: Layout = this.layout): boolean {
+    const { maxRows, preventCollision } = this.options;
+    if (maxRows != null && layoutBottom(next) > Math.max(maxRows, layoutBottom(base))) return false;
+    if (preventCollision && !this.options.allowOverlap) {
+      const before = new Map(base.map((item) => [item.id, item]));
+      for (const item of next) {
+        const prev = item.id === id ? undefined : before.get(item.id);
+        if (prev && (item.x !== prev.x || item.y > prev.y)) return false;
+      }
+    }
+    return true;
+  }
+
+  private nudge(layout: Layout, id: string, delta: Partial<Rect>): GridItem[] | undefined {
+    const next = this.options.allowOverlap ? nudgeFree(layout, id, delta, this.options.cols) : nudgeItem(layout, id, delta, this.options);
+    return next && this.accepts(next, id) ? next : undefined;
   }
 
   register(id: string, node: HTMLElement): void {
@@ -209,9 +312,13 @@ export class GridController {
       } else if (session.state === "active") this.finish(session, false);
       else if (session.state === "pending") this.end(false);
     }
+    if (this.grab && !sameLayout(next, this.layout)) this.release(false);
+    if (this.drop) this.drop.key = "";
+    const before = this.byId;
     this.layout = next;
     this.byId = new Map(next.map((item) => [item.id, item]));
     this.repaint();
+    this.notify(before);
   }
 
   private measure(): boolean {
@@ -243,6 +350,7 @@ export class GridController {
   }
 
   private write(node: HTMLElement, left: number, top: number, width: number, height: number): void {
+    if (this.rtl) left = this.width - left - width;
     left += this.padLeft;
     top += this.padTop;
     let box = this.painted.get(node);
@@ -278,7 +386,7 @@ export class GridController {
       this.session.dirty = true;
       this.session.origin = this.session.view = undefined;
       this.schedule();
-    } else this.paint(this.layout);
+    } else this.paint(this.grab?.preview ?? this.layout);
   }
 
   private instant(fn: () => void): void {
@@ -293,6 +401,12 @@ export class GridController {
 
   private syncHandleMode(): void {
     this.root?.toggleAttribute("data-l8-handle-mode", this.options.handle);
+  }
+
+  // Pointer x in grid coordinates (from the start edge of the grid's content box).
+  private pointerX(clientX: number, ox: number, scale: number): number {
+    const x = (clientX - ox) / scale;
+    return this.rtl ? this.width - x : x;
   }
 
   private allows(item: GridItem, kind: Session["kind"]): boolean {
@@ -320,6 +434,7 @@ export class GridController {
       if (this.options.handle && !target.closest("[data-l8-handle]")) return;
     }
 
+    this.release(false);
     const hold = event.pointerType === "touch" && kind === "move" && !this.options.handle;
     if (!hold) event.preventDefault();
     node.focus({ preventScroll: true });
@@ -327,14 +442,16 @@ export class GridController {
     const [ox, oy, scale] = this.origin();
     const { colWidth, stepX, stepY } = this.metrics;
     const { gap, rowHeight } = this.options;
-    const [ex, ey] = EDGES.get(edge) ?? [0, 0];
+    const dir = EDGES.get(this.rtl ? mirror(edge) : edge) ?? ([0, 0] as const);
+    const [ex, ey] = dir;
     const left = item.x * stepX;
     const top = item.y * stepY;
-    const px = (event.clientX - ox) / scale;
+    const px = this.pointerX(event.clientX, ox, scale);
     const py = (event.clientY - oy) / scale;
     const session: Session = {
       kind,
       edge,
+      dir,
       state: "pending",
       item,
       node,
@@ -426,6 +543,7 @@ export class GridController {
     void placeholder.offsetWidth;
     placeholder.style.transition = "";
     window.addEventListener("scroll", this.onScroll, { capture: true, passive: true });
+    this.hooks.onInteractionStart?.(session.item.id, session.kind);
   }
 
   private schedule(): void {
@@ -440,7 +558,7 @@ export class GridController {
 
     const [ox, oy, scale] = (session.origin ??= this.origin());
     const view = session.scroller ? (session.view ??= session.scroller.getBoundingClientRect()) : undefined;
-    const px = (session.clientX - ox) / scale;
+    const px = this.pointerX(session.clientX, ox, scale);
     const py = (session.clientY - oy) / scale;
     const { colWidth, stepX, stepY } = this.metrics;
     const { cols, gap, rowHeight } = this.options;
@@ -452,7 +570,7 @@ export class GridController {
 
     if (session.kind === "move") {
       if (!session.drag) {
-        session.drag = dragItem(this.layout, origin.id, this.options);
+        session.drag = this.options.allowOverlap ? () => this.layout : dragItem(this.layout, origin.id, this.options);
         session.floor = origin.y;
         for (const other of this.layout) if (other.id !== origin.id) session.floor = Math.max(session.floor, other.y + other.h);
       }
@@ -461,9 +579,16 @@ export class GridController {
       const left = clamp(x, 0, this.width - width);
       const top = clamp(y, 0, session.floor * stepY);
       this.write(session.node, left, top, width, height);
-      preview = session.drag(x / stepX, top / stepY);
+      if (this.options.allowOverlap) {
+        const target = clampItem({ ...origin, x: Math.round(left / stepX), y: Math.round(top / stepY) }, cols);
+        const key = `${target.x},${target.y}`;
+        if (session.dirty || key !== session.key) {
+          session.key = key;
+          preview = setFree(this.layout, target, cols);
+        }
+      } else preview = session.drag(x / stepX, top / stepY);
     } else {
-      const [ex, ey] = EDGES.get(session.edge)!;
+      const [ex, ey] = session.dir;
       const minW = Math.max(1, origin.minW ?? 1);
       const maxW = Math.min(cols, origin.maxW ?? cols);
       const minH = Math.max(1, origin.minH ?? 1);
@@ -492,15 +617,23 @@ export class GridController {
       const key = `${target.x},${target.y},${target.w},${target.h}`;
       if (session.dirty || key !== session.key) {
         session.key = key;
-        preview = resolveLayout(this.layout, this.options, target);
+        preview = this.resolve(this.layout, target);
+        // With maxRows or preventCollision, a size that is not allowed falls back towards the original size.
+        for (let next = target; !this.accepts(preview, origin.id) && !sameRect(next, origin); ) {
+          next = shrinkTowards(next, origin);
+          preview = this.resolve(this.layout, next);
+        }
       }
     }
 
-    if (session.dirty || preview !== session.preview) {
+    if (preview !== session.preview && !this.accepts(preview, origin.id)) preview = session.preview;
+    const changed = preview !== session.preview;
+    if (session.dirty || changed) {
       session.dirty = false;
       session.preview = preview;
       this.paint(preview, origin.id, Math.max(session.kind === "move" ? 0 : 1, session.minRows - layoutBottom(preview)));
       this.place(this.placeholder!, preview.find((item) => item.id === origin.id)!);
+      if (changed) this.hooks.onPreviewChange?.(preview, origin.id, session.kind);
     }
     this.autoScroll(session, Math.max(0, view?.top ?? 0) + session.inset[0], Math.min(window.innerHeight, view?.bottom ?? Infinity) - session.inset[1]);
   };
@@ -533,7 +666,7 @@ export class GridController {
     this.frameId = 0;
     window.removeEventListener("scroll", this.onScroll, { capture: true });
     if (this.root?.hasPointerCapture(session.pointerId)) this.root.releasePointerCapture(session.pointerId);
-    if (commit) this.commit(session.preview, session.item.id, session.kind);
+    const committed = commit && this.commit(session.preview, session.item.id, session.kind);
     this.settling = () => {
       this.settling = null;
       this.root?.removeAttribute("data-l8-dragging");
@@ -549,6 +682,7 @@ export class GridController {
     };
     if (defer) this.settleId = requestAnimationFrame(this.settling);
     else this.flush();
+    this.hooks.onInteractionEnd?.(session.item.id, session.kind, committed);
   }
 
   private flush(): void {
@@ -570,11 +704,14 @@ export class GridController {
     setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }));
   }
 
-  private commit(next: GridItem[], id: string, kind: ChangeKind): void {
-    if (sameLayout(next, this.layout)) return;
+  private commit(next: GridItem[], id: string, kind: ChangeKind): boolean {
+    if (sameLayout(next, this.layout)) return false;
+    const before = this.byId;
     this.source = this.layout = next;
     this.byId = new Map(next.map((item) => [item.id, item]));
     this.onCommit(next, id, kind);
+    this.notify(before);
+    return true;
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -586,17 +723,126 @@ export class GridController {
       }
       return;
     }
+    if (this.grab) return this.onGrabKey(event);
     const delta = ARROWS[event.key];
     const node = this.itemNode(event.target);
-    if (!delta || !node || node !== event.target || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!node || node !== event.target || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (this.options.keyboard === "grab") {
+      if (event.key === " " || event.key === "Enter") this.pickUp(event, node);
+      return;
+    }
+    if (!delta) return;
     const item = this.byId.get(node.dataset.l8Id!);
     const kind = event.shiftKey ? "resize" : "move";
     if (!item || !this.allows(item, kind)) return;
     event.preventDefault();
-    const [dx, dy] = delta;
-    const next = nudgeItem(this.layout, item.id, event.shiftKey ? { w: dx, h: dy } : { x: dx, y: dy }, this.options);
-    if (!next) return;
+    const [dx, dy] = this.rtl ? [-delta[0], delta[1]] : delta;
+    const next = this.nudge(this.layout, item.id, event.shiftKey ? { w: dx, h: dy } : { x: dx, y: dy });
+    if (!next) return this.hooks.announce?.("blocked", item.id, item);
     this.commit(next, item.id, kind);
     this.paint(this.layout);
   };
+
+  private pickUp(event: KeyboardEvent, node: HTMLElement): void {
+    const item = this.byId.get(node.dataset.l8Id!);
+    if (!item || !(this.allows(item, "move") || this.allows(item, "resize"))) return;
+    event.preventDefault();
+    this.grab = { id: item.id, node, kind: "move", preview: this.layout };
+    node.setAttribute("data-l8-grabbed", "");
+    this.hooks.onInteractionStart?.(item.id, "move");
+    this.hooks.announce?.("grabbed", item.id, item);
+  }
+
+  private onGrabKey(event: KeyboardEvent): void {
+    const grab = this.grab!;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      return this.release(false);
+    }
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      return this.release(true);
+    }
+    const delta = ARROWS[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const item = grab.preview.find((candidate) => candidate.id === grab.id)!;
+    const kind = event.shiftKey ? "resize" : "move";
+    const [dx, dy] = this.rtl ? [-delta[0], delta[1]] : delta;
+    const next = this.allows(item, kind) ? this.nudge(grab.preview, grab.id, event.shiftKey ? { w: dx, h: dy } : { x: dx, y: dy }) : undefined;
+    if (!next) return this.hooks.announce?.("blocked", grab.id, item);
+    grab.kind = kind;
+    grab.preview = next;
+    this.paint(next);
+    this.hooks.onPreviewChange?.(next, grab.id, kind);
+    this.hooks.announce?.("moved", grab.id, next.find((candidate) => candidate.id === grab.id)!);
+  }
+
+  // Ends a keyboard grab, committing the previewed layout or restoring the committed one.
+  private release(commit: boolean, silent = false): void {
+    const grab = this.grab;
+    if (!grab) return;
+    this.grab = null;
+    grab.node.removeAttribute("data-l8-grabbed");
+    const committed = commit && this.commit(grab.preview, grab.id, grab.kind);
+    this.paint(this.layout);
+    if (silent) return;
+    this.hooks.onInteractionEnd?.(grab.id, grab.kind, committed);
+    const item = this.byId.get(grab.id);
+    if (item) this.hooks.announce?.(commit ? "dropped" : "cancelled", grab.id, item);
+  }
+
+  private onFocusOut = (event: FocusEvent): void => {
+    if (this.grab && event.target === this.grab.node) this.release(false);
+  };
+
+  private onDragOver = (event: DragEvent): void => {
+    const root = this.root;
+    if (!this.hooks.dropItem || this.session || !root) return;
+    const spec = this.hooks.dropItem(event);
+    if (!spec) return;
+    const [ox, oy, scale] = this.origin();
+    const { stepX, stepY } = this.metrics;
+    const px = this.pointerX(event.clientX, ox, scale);
+    const py = (event.clientY - oy) / scale;
+    const id = spec.id ?? DROP_ID;
+    const item = clampItem({ ...spec, id, x: Math.round(px / stepX - spec.w / 2), y: Math.max(0, Math.round(py / stepY - spec.h / 2)) }, this.options.cols);
+    const key = `${id},${item.x},${item.y},${item.w},${item.h}`;
+    if (this.drop?.key === key) return event.preventDefault();
+    const base = this.layout.filter((other) => other.id !== id);
+    const preview = this.resolve([...base, item], item);
+    if (!this.accepts(preview, id)) {
+      if (this.drop) event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    const placed = preview.find((other) => other.id === id)!;
+    this.drop = { key, item: placed, preview };
+    root.setAttribute("data-l8-dropping", "");
+    this.placeholder!.setAttribute("data-l8-visible", "");
+    this.place(this.placeholder!, placed);
+    this.paint(preview);
+  };
+
+  private onDragLeave = (event: DragEvent): void => {
+    const related = event.relatedTarget as Node | null;
+    if (this.drop && !(related && this.root?.contains(related))) this.leaveDrop();
+  };
+
+  private onDrop = (event: DragEvent): void => {
+    const drop = this.drop;
+    if (!drop) return;
+    event.preventDefault();
+    this.leaveDrop();
+    this.hooks.onDrop?.(drop.preview, drop.item, event);
+  };
+
+  private leaveDrop(): void {
+    if (!this.drop) return;
+    this.drop = null;
+    this.root?.removeAttribute("data-l8-dropping");
+    this.placeholder?.removeAttribute("data-l8-visible");
+    this.paint(this.layout);
+  }
 }
