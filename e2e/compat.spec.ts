@@ -18,7 +18,13 @@ async function state(page: Page) {
   }));
 }
 
+// Waits until the grid has painted the latest pointer position: a release before that commits the previous frame's
+// preview (in both versions), which would make the comparison depend on the browser's frame timing.
+const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
 async function play(page: Page, version: "old" | "new", seed: number) {
+  // tall enough that pointers never come near the edges, where time-based auto-scrolling would kick in
+  await page.setViewportSize({ width: 1280, height: 2400 });
   await page.goto(`/?mode=compat&v=${version}&seed=${seed}`);
   await page.waitForSelector("[data-l8-id]");
   const trace: unknown[] = [];
@@ -42,8 +48,9 @@ async function play(page: Page, version: "old" | "new", seed: number) {
       for (let m = 0; m < moves; m++) {
         x += (next() - 0.5) * 300;
         y += (next() - 0.5) * 200;
+        y = Math.max(120, y);
         await page.mouse.move(x, y, { steps: 1 + Math.floor(next() * 4) });
-        await page.waitForTimeout(20);
+        await settle(page);
       }
       await page.mouse.up();
     } else {

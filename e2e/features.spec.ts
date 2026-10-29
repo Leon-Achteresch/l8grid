@@ -35,9 +35,15 @@ test("rtl mirrors positions and pointer dragging", async ({ page }) => {
   await page.mouse.move(box.x + 20, box.y + 20);
   await page.mouse.down();
   await page.mouse.move(box.x + 20 - box.width - 20, box.y + 20, { steps: 10 });
+  // let the grid paint the last pointer position before releasing
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.mouse.up();
-  const changes = await page.evaluate(() => window.l8.changes as [unknown, GridItem[]][]);
-  expect(changes.at(-1)![1].find((item) => item.id === "a")).toMatchObject({ x: 4, y: 0 });
+  await expect
+    .poll(async () => {
+      const changes = await page.evaluate(() => window.l8.changes as [unknown, GridItem[]][]);
+      return changes.at(-1)?.[1].find((item) => item.id === "a");
+    })
+    .toMatchObject({ x: 4, y: 0 });
 });
 
 test("ResponsiveGrid switches breakpoints with the width", async ({ page }) => {
