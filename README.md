@@ -10,6 +10,12 @@ npm i l8grid
 
 Peer dependencies: `react` and `react-dom` >= 18.
 
+**Live demo:** run `npm run dev`, or open the GitHub Pages demo once it is enabled for the repository.
+
+> **Upgrading from 0.2?** Nothing to change. Every feature added in 0.3 is opt-in, layouts are stored in the same format, and CI checks on every change that the grid behaves exactly like 0.2.1 when only 0.2 props are used. See [Compatibility](#compatibility) and the [changelog](CHANGELOG.md).
+
+Coming from react-grid-layout? See [MIGRATING.md](MIGRATING.md).
+
 ## Quick start
 
 ```tsx
@@ -51,6 +57,17 @@ Keep `renderItem` and `getItemLabel` stable (e.g. `useCallback`): cells re-rende
 | `handle` | `boolean` | `false` | Only elements with `data-l8-handle` start a move. |
 | `className` | `string` | - | Added to the `.l8-grid` root. |
 | `style` | `CSSProperties` | - | Inline style for the root. |
+| `maxRows` | `number` | - | Moves and resizes that would make the layout taller than this many rows are not taken (a resize stops at the largest size that fits). A layout that is already taller is left alone. |
+| `preventCollision` | `boolean` | `false` | Moving or resizing never pushes other items aside or down; an item only goes where there is room. |
+| `allowOverlap` | `boolean` | `false` | Items may overlap: nothing is pushed or compacted (`compaction` is ignored), items are only clamped to the grid. |
+| `direction` | `"ltr" \| "rtl"` | `"ltr"` | `"rtl"` mirrors the grid: column 0 is on the right, dragging, resizing and arrow keys follow. |
+| `keyboard` | `"instant" \| "grab"` | `"instant"` | `"grab"`: Space/Enter picks a tile up, arrows move it, Space/Enter drops, Escape cancels. See [Keyboard and accessibility](#keyboard-and-accessibility). |
+| `onInteractionStart` | `(change: GridChange) => void` | - | A pointer drag or resize (or a keyboard grab) started. |
+| `onPreviewChange` | `(layout: GridItem[], change: GridChange) => void` | - | The previewed layout changed during an interaction. |
+| `onInteractionEnd` | `(change: GridChange, committed: boolean) => void` | - | An interaction ended. `committed` is `true` when `onLayoutChange` was called for it (it is called right before). |
+| `onDrop` | `(layout: GridItem[], item: GridItem, event: DragEvent) => void` | - | Accept external HTML drag-and-drop sources. See [Dropping from outside](#dropping-from-outside). |
+| `droppingItem` | `DropItem \| (event: DragEvent) => DropItem \| false` | `{ w: 4, h: 4 }` | Size (and optional `id`, constraints) of the dropped item, or a function deciding per drag. |
+| `rootRef` | `Ref<HTMLDivElement>` | - | Ref to the `.l8-grid` root. |
 
 ## Layout items
 
@@ -106,7 +123,18 @@ interface GridItem {
 - Each item has `role="group"`, an `aria-label` from `getItemLabel`, an `aria-roledescription`, and instructions linked via `aria-describedby`.
 - After each committed change a polite live region announces the new position.
 
-The `messages` prop (`GridMessages`) localizes these texts. Defaults are English.
+### Grab mode
+
+With `keyboard="grab"` arrow keys do nothing until a tile is picked up, the pattern screen reader users know from other drag-and-drop lists:
+
+- Space or Enter on a focused tile picks it up (`[data-l8-grabbed]` is set on it).
+- Arrow keys move it, Shift + arrow keys resize it. The layout around it updates as a preview, nothing is committed yet.
+- Space or Enter drops it and calls `onLayoutChange` once. Escape, or moving focus away, cancels and restores the layout.
+- Each step is announced. Steps that are not possible are announced as blocked.
+
+Grab mode has its own English defaults for the instructions and announcements. In the default mode (`"instant"`) nothing is announced beyond the `moved` message unless you pass a `blocked` message.
+
+The `messages` prop (`GridMessages`) localizes these texts. Defaults are English. `grabInstructions`, `grabbed`, `dropped`, `cancelled` and `blocked` are optional and used for grab mode.
 
 ```tsx
 const messages = {
@@ -137,6 +165,9 @@ Hooks:
 - `[data-l8-static]`: on static items
 - `[data-l8-nodrag]`: on items that cannot be moved
 - `[data-l8-handle-mode]`: on the grid when `handle` is set
+- `[data-l8-grabbed]`: on an item picked up with the keyboard (`keyboard="grab"`)
+- `[data-l8-dropping]`: on the grid while something is dragged over it (`onDrop`)
+- `[data-l8-ready]`: on the grid once it is mounted (see [Server rendering](#server-rendering))
 
 Items are CSS size containers (`container-type: size`), so tile content can use container queries. `prefers-reduced-motion: reduce` disables transitions. Padding on `.l8-grid` insets the tiles, and grids inside scaled or zoomed parents (`transform: scale()`) track the pointer correctly.
 
@@ -168,6 +199,110 @@ Items are CSS size containers (`container-type: size`), so tile content can use 
 }
 ```
 
+## Responsive layouts
+
+`ResponsiveGrid` switches columns and layouts with the width of its container. It takes all `Grid` props except `layout`, `onLayoutChange` and `cols`.
+
+```tsx
+import { ResponsiveGrid } from "l8grid";
+
+const [layouts, setLayouts] = useState({ lg: initialLayout });
+
+<ResponsiveGrid
+  layouts={layouts}
+  onLayoutsChange={setLayouts}
+  breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }} // default
+  cols={{ lg: 24, md: 20, sm: 12, xs: 8, xxs: 4 }} // default
+  onBreakpointChange={(breakpoint, cols) => {}}
+  renderItem={renderItem}
+/>;
+```
+
+- `breakpoints` are minimum container widths in px. The largest one that fits wins.
+- A breakpoint without a layout is derived from the nearest breakpoint that has one (larger ones first), with `x` and `w` scaled to the new column count. It is stored in `layouts` once the user changes something there.
+- `onLayoutsChange(layouts, change)` receives all layouts with the current breakpoint replaced; `change.breakpoint` names it.
+- Before the width is known (server rendering) `defaultBreakpoint` (default: the largest) is used.
+- `getBreakpoint(breakpoints, width)` and `layoutForBreakpoint(layouts, breakpoint, options)` are exported for your own logic.
+
+## Dropping from outside
+
+Pass `onDrop` to let users drag new tiles in from a palette (any element with `draggable` and HTML drag-and-drop):
+
+```tsx
+<div draggable onDragStart={(event) => event.dataTransfer.setData("application/x-widget", "chart")}>Chart</div>
+
+<Grid
+  {...props}
+  droppingItem={(event) => event.dataTransfer?.types.includes("application/x-widget") && { w: 6, h: 4 }}
+  onDrop={(layout, item, event) => {
+    const id = crypto.randomUUID();
+    setLayout(layout.map((other) => (other.id === item.id ? { ...other, id } : other)));
+  }}
+/>;
+```
+
+While dragging over the grid, the placeholder shows where the item would land and the other tiles make room (with the same rules as `maxRows`, `preventCollision` and `allowOverlap`). `layout` contains the new item with the id from `droppingItem` (default `"__l8-drop__"`); give it a real id when you store it. Return `false` from `droppingItem` to refuse a drag. Without `onDrop` the grid ignores HTML drag-and-drop as before.
+
+## Tile size inside the content
+
+`useGridItem()` returns the committed `GridItem` of the tile it is rendered in. Only components that call it re-render when their tile moves or resizes, so tiles can adapt their content to their size in JavaScript:
+
+```tsx
+function Chart() {
+  const { w, h } = useGridItem()!;
+  return w < 6 ? <Sparkline /> : <FullChart rows={h} />;
+}
+```
+
+## Undo and redo
+
+```tsx
+const history = useLayoutHistory(initialLayout, { limit: 100 });
+
+<Grid layout={history.layout} onLayoutChange={history.onLayoutChange} renderItem={renderItem} />
+<button onClick={history.undo} disabled={!history.canUndo}>Undo</button>
+<button onClick={history.redo} disabled={!history.canRedo}>Redo</button>
+```
+
+It works for any value, for example the `layouts` of a `ResponsiveGrid` (pass `history.onLayoutChange` as `onLayoutsChange`). `history.reset(layout)` replaces the state and clears the history.
+
+## Server rendering
+
+The grid renders the initial positions as CSS custom properties, and the stylesheet places tiles with them until the grid is mounted (`[data-l8-ready]`), so server-rendered HTML shows the layout before hydration. Load the stylesheet with the server-rendered page, because the client injects it only on mount:
+
+```ts
+import "l8grid/styles.css"; // or render the `gridStyles` string export into a <style> tag
+```
+
+Loading the stylesheet yourself also helps with a Content-Security-Policy that blocks injected `<style>` elements: the grid does not inject a second copy when an element with id `l8grid-styles` exists, so give your `<style>` or `<link>` that id.
+
+## Headless
+
+`useGrid(options)` gives you the behaviour of `<Grid>` for your own markup. It takes the same options as the `Grid` props (without the rendering ones) and returns refs:
+
+```tsx
+const { rootRef, placeholderRef, itemRef } = useGrid<HTMLUListElement, HTMLLIElement>({ layout, onLayoutChange, cols: 12 });
+
+<ul ref={rootRef} className="l8-grid">
+  {layout.map((item) => (
+    <li key={item.id} ref={itemRef(item.id)} data-l8-id={item.id} className="l8-item" tabIndex={0}>
+      {item.id}
+    </li>
+  ))}
+  <li ref={placeholderRef} className="l8-placeholder" />
+</ul>;
+```
+
+Items and the placeholder must be direct children of the root. The returned `controller` (`GridController`) exposes `getLayout()`, `getItem(id)` and `subscribe(id, listener)`.
+
+## Compatibility
+
+l8grid follows [semantic versioning](https://semver.org). Within 0.x, minor versions may add features but do not change existing behaviour:
+
+- **Upgrading needs no code changes.** New props are optional and off by default. New `GridMessages` fields and `GridOptions` fields are optional, so existing TypeScript code still compiles.
+- **Stored layouts stay compatible in both directions.** A layout is still a plain `GridItem[]` with the same fields; layouts saved by 0.3 load in 0.2 and the other way round. Downgrading only means removing the props and exports added in 0.3 from your code.
+- **Behaviour is checked against the previous release.** `npm run test:compat` replays 300 random scenarios (layouts, props, pointer and keyboard input, external updates) on the published 0.2.1 and on the current code in jsdom, and `npm run test:e2e` replays real mouse and keyboard input in Chromium. Commits, return values and the DOM must be identical. The injected stylesheet keeps every 0.2.1 rule unchanged; new rules only match attributes that older setups never produce after mount.
+
 ## Layout utilities
 
 Pure functions, exported from the package. `LayoutOptions` is `{ cols: number; compaction: Compaction }`.
@@ -184,8 +319,16 @@ Pure functions, exported from the package. `LayoutOptions` is `{ cols: number; c
 ## Development
 
 ```sh
-npm run dev        # playground (Vite)
-npm test           # Vitest
+npm run dev           # playground (Vite)
+npm test              # unit tests (Vitest)
+npm run test:compat   # differential test against the published 0.2.1
+npm run test:fuzz     # randomized checks of the 0.3 options
+npm run build         # tsdown, writes dist/styles.css too
+npm run test:e2e      # Playwright (after build); E2E_BROWSERS=chromium,firefox,webkit
 npm run typecheck
-npm run build      # tsdown
+npm run lint          # oxlint
+npm run size          # gzip size limit
+npm run build:demo    # playground for GitHub Pages
 ```
+
+CI runs all of these with React 18 and 19. Publishing a GitHub release publishes the package to npm with provenance (needs an `NPM_TOKEN` secret).

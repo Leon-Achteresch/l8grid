@@ -1,6 +1,6 @@
-import { StrictMode, useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { addItem, Grid, type Compaction, type GridItem, type ResizeHandle } from "../src";
+import { addItem, Grid, ResponsiveGrid, useGridItem, useLayoutHistory, type Compaction, type GridItem, type ResizeHandle } from "../src";
 import "./style.css";
 
 type Kind = "kpi" | "bars" | "line" | "table" | "text" | "donut";
@@ -155,6 +155,11 @@ const BODY: Record<Kind, (props: { seed: number }) => ReactNode> = {
   text: () => null,
 };
 
+function SizeBadge() {
+  const item = useGridItem();
+  return item ? <small className="size">{`${item.w} × ${item.h}`}</small> : null;
+}
+
 function TileView({ tile }: { tile: Tile }) {
   const Body = BODY[tile.kind];
   return (
@@ -166,6 +171,7 @@ function TileView({ tile }: { tile: Tile }) {
           </svg>
         </span>
         <h2>{tile.title}</h2>
+        <SizeBadge />
       </header>
       <div className="body">
         <Body seed={tile.seed} />
@@ -179,9 +185,19 @@ function TileView({ tile }: { tile: Tile }) {
   );
 }
 
+const DROP_TYPE = "application/x-l8grid-tile";
+
 function App() {
-  const [mode, setMode] = useState<"dashboard" | "stress">("dashboard");
-  const [dashboard, setDashboard] = useState(loadDashboard);
+  const [mode, setMode] = useState<"dashboard" | "responsive" | "stress">("dashboard");
+  const history = useLayoutHistory(loadDashboard);
+  const dashboard = history.layout;
+  const setDashboard = history.reset;
+  const [responsive, setResponsive] = useState<Record<string, GridItem[]>>(() => ({ lg: DASHBOARD.map(([item]) => item) }));
+  const [breakpoint, setBreakpoint] = useState("");
+  const [keyboard, setKeyboard] = useState<"instant" | "grab">("instant");
+  const [direction, setDirection] = useState<"ltr" | "rtl">("ltr");
+  const [overlap, setOverlap] = useState(false);
+  const [noPush, setNoPush] = useState(false);
   const [stress, setStress] = useState(() => stressLayout(400));
   const [compaction, setCompaction] = useState<Compaction>("vertical");
   const [handle, setHandle] = useState(false);
@@ -192,6 +208,8 @@ function App() {
   const [rowHeight, setRowHeight] = useState(22);
   const stressMode = mode === "stress";
 
+  useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(dashboard)), [dashboard]);
+
   const toolbar = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -201,25 +219,45 @@ function App() {
     return () => observer.disconnect();
   }, []);
 
-  const tiles = useMemo(() => (mode === "dashboard" ? new Map(DASHBOARD.map(([item, tile]) => [item.id, tile])) : stress[1]), [mode, stress]);
-  const layout = mode === "dashboard" ? dashboard : stress[0];
+  const tiles = useMemo(() => (mode === "stress" ? stress[1] : new Map(DASHBOARD.map(([item, tile]) => [item.id, tile]))), [mode, stress]);
+  const layout = mode === "stress" ? stress[0] : dashboard;
   const renderItem = useCallback((id: string) => <TileView tile={tiles.get(id) ?? newTile(id)} />, [tiles]);
   const getItemLabel = useCallback((id: string) => (tiles.get(id) ?? newTile(id)).title, [tiles]);
   const gridCols = stressMode ? 12 : cols;
   const gap = stressMode ? 6 : 12;
 
+  const record = history.onLayoutChange;
   const onLayoutChange = useCallback(
     (next: GridItem[]) => {
       if (mode === "stress") return setStress(([, t]) => [next, t]);
-      setDashboard(next);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      record(next);
     },
-    [mode],
+    [mode, record],
   );
 
-  const add = () => {
-    const n = dashboard.filter((item) => item.id.startsWith("neu-")).length + 1;
-    onLayoutChange(addItem(dashboard, { id: `neu-${n}`, w: 6, h: 4 }, { cols, compaction }));
+  const nextId = () => `neu-${dashboard.filter((item) => item.id.startsWith("neu-")).length + 1}`;
+  const add = () => onLayoutChange(addItem(dashboard, { id: nextId(), w: 6, h: 4 }, { cols, compaction }));
+  const onDrop = useCallback(
+    (next: GridItem[], item: GridItem) => {
+      const id = `neu-${next.filter((other) => other.id.startsWith("neu-")).length + 1}`;
+      record(next.map((other) => (other === item || other.id === item.id ? { ...other, id } : other)));
+    },
+    [record],
+  );
+  const droppingItem = useCallback((event: DragEvent) => event.dataTransfer?.types.includes(DROP_TYPE) && { w: 6, h: 4 }, []);
+
+  const shared = {
+    renderItem,
+    getItemLabel,
+    compaction,
+    draggable,
+    resizable,
+    resizeHandles: HANDLES[handles],
+    handle,
+    keyboard,
+    direction,
+    allowOverlap: overlap,
+    preventCollision: noPush,
   };
 
   return (
@@ -228,6 +266,9 @@ function App() {
         <div className="segmented">
           <button aria-pressed={mode === "dashboard"} onClick={() => setMode("dashboard")}>
             Dashboard
+          </button>
+          <button aria-pressed={mode === "responsive"} onClick={() => setMode("responsive")}>
+            Responsive{breakpoint && mode === "responsive" ? ` · ${breakpoint}` : ""}
           </button>
           <button aria-pressed={mode === "stress"} onClick={() => setMode("stress")}>
             Stress · {stress[0].length} Tiles
@@ -261,9 +302,29 @@ function App() {
             </button>
           ))}
         </div>
+        <div className="segmented" role="group" aria-label="Tastatur">
+          <button aria-pressed={keyboard === "instant"} onClick={() => setKeyboard("instant")} title="Pfeiltasten verschieben sofort">
+            Pfeile sofort
+          </button>
+          <button aria-pressed={keyboard === "grab"} onClick={() => setKeyboard("grab")} title="Leertaste aufnehmen, Pfeile, Leertaste ablegen, Esc bricht ab">
+            Aufnehmen ␣
+          </button>
+        </div>
+        <label>
+          <input type="checkbox" checked={direction === "rtl"} onChange={(e) => setDirection(e.target.checked ? "rtl" : "ltr")} />
+          RTL
+        </label>
+        <label title="Kacheln dürfen sich überlappen, nichts wird verschoben">
+          <input type="checkbox" checked={overlap} onChange={(e) => setOverlap(e.target.checked)} />
+          Überlappen
+        </label>
+        <label title="Andere Kacheln werden nie weggeschoben">
+          <input type="checkbox" checked={noPush} onChange={(e) => setNoPush(e.target.checked)} />
+          Nicht schieben
+        </label>
         <label>
           Spalten
-          <input type="range" min={4} max={48} value={cols} disabled={stressMode} onChange={(e) => setCols(Number(e.target.value))} />
+          <input type="range" min={4} max={48} value={cols} disabled={mode !== "dashboard"} onChange={(e) => setCols(Number(e.target.value))} />
           <output>{cols}</output>
         </label>
         <label>
@@ -274,6 +335,15 @@ function App() {
         {mode === "dashboard" && (
           <>
             <button onClick={add}>+ Kachel</button>
+            <span className="palette" draggable onDragStart={(event) => event.dataTransfer.setData(DROP_TYPE, "tile")} title="Ins Raster ziehen">
+              ⠿ Kachel ziehen
+            </span>
+            <button onClick={history.undo} disabled={!history.canUndo}>
+              ↶ Rückgängig
+            </button>
+            <button onClick={history.redo} disabled={!history.canRedo}>
+              ↷ Wiederholen
+            </button>
             <button
               onClick={() => {
                 localStorage.removeItem(STORAGE_KEY);
@@ -286,22 +356,30 @@ function App() {
         )}
         <span className="hint">Ziehen · Griffe am Rand = Größe · Tab + Pfeiltasten (Shift = Größe) · Esc bricht ab</span>
       </div>
-      <Grid
-        key={mode}
-        layout={layout}
-        onLayoutChange={onLayoutChange}
-        renderItem={renderItem}
-        getItemLabel={getItemLabel}
-        cols={gridCols}
-        rowHeight={stressMode ? 28 : rowHeight}
-        gap={gap}
-        style={{ "--gap": `${gap}px` } as CSSProperties}
-        compaction={compaction}
-        draggable={draggable}
-        resizable={resizable}
-        resizeHandles={HANDLES[handles]}
-        handle={handle}
-      />
+      {mode === "responsive" ? (
+        <ResponsiveGrid
+          {...shared}
+          layouts={responsive}
+          onLayoutsChange={setResponsive}
+          onBreakpointChange={setBreakpoint}
+          rowHeight={rowHeight}
+          gap={gap}
+          style={{ "--gap": `${gap}px` } as CSSProperties}
+        />
+      ) : (
+        <Grid
+          {...shared}
+          key={mode}
+          layout={layout}
+          onLayoutChange={onLayoutChange}
+          cols={gridCols}
+          rowHeight={stressMode ? 28 : rowHeight}
+          gap={gap}
+          style={{ "--gap": `${gap}px` } as CSSProperties}
+          onDrop={mode === "dashboard" ? onDrop : undefined}
+          droppingItem={droppingItem}
+        />
+      )}
     </div>
   );
 }

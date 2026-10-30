@@ -315,3 +315,18 @@ td:last-child {
 @container (max-width: 90px) {
   .tile h2 { font-size: 11px; }
 }
+
+.palette {
+  padding: 5px 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--tile);
+  cursor: grab;
+}
+
+.tile header .size {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
