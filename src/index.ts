@@ -46,3 +46,5 @@ export {
   type LayoutOptions,
   type Rect,
 } from "./layout";
+
+export { rowsForContent, rowsForAspectRatio, resizeItems } from "./sizing";

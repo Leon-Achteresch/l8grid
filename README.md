@@ -332,3 +332,17 @@ npm run build:demo    # playground for GitHub Pages
 ```
 
 CI runs all of these with React 18 and 19. Publishing a GitHub release publishes the package to npm with provenance (needs an `NPM_TOKEN` secret).
+
+### Content and shared sizes
+
+```ts
+import { rowsForContent, rowsForAspectRatio, resizeItems } from "l8grid";
+
+const h = rowsForContent(measuredContentHeight, rowHeight, gap);
+const ratioHeight = rowsForAspectRatio(tileWidthInPixels, 16 / 9, rowHeight, gap);
+const next = resizeItems(layout, selectedIds, { w: 8, h: ratioHeight }, { cols, compaction });
+```
+
+Measure intrinsic content in the host (for example with `ResizeObserver`), including the padding the content needs. These helpers do not measure or poll the DOM. Sizes are rounded up to whole rows, so an exact pixel aspect ratio is not guaranteed. `resizeItems` honors per-item constraints and skips static or explicitly non-resizable items before resolving collisions. Invalid dimensions throw `RangeError`. The playground demonstrates title search, jumping to a tile and applying a shared size; it never searches business data inside a tile.
+
+The complete assessment of the existing research portfolio is in [docs/feature-decisions.md](docs/feature-decisions.md). Data/permissions/filtering and chart-provider behavior remain host responsibilities.
