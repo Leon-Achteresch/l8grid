@@ -1,6 +1,6 @@
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { addItem, Grid, ResponsiveGrid, useGridItem, useLayoutHistory, type Compaction, type GridItem, type ResizeHandle } from "../src";
+import { addItem, resizeItems, rowsForAspectRatio, Grid, ResponsiveGrid, useGridItem, useLayoutHistory, type Compaction, type GridItem, type ResizeHandle } from "../src";
 import "./style.css";
 
 type Kind = "kpi" | "bars" | "line" | "table" | "text" | "donut";
@@ -206,6 +206,8 @@ function App() {
   const [handles, setHandles] = useState("Ecke");
   const [cols, setCols] = useState(24);
   const [rowHeight, setRowHeight] = useState(22);
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const stressMode = mode === "stress";
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(dashboard)), [dashboard]);
@@ -235,6 +237,16 @@ function App() {
     [mode, record],
   );
 
+  const matching = layout.filter(item => !item.static && getItemLabel(item.id).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const jumpTo = (id: string) => {
+    const element = document.querySelector<HTMLElement>(`[data-l8-id="${CSS.escape(id)}"]`);
+    element?.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+    element?.focus({ preventScroll: true });
+  };
+  const matchSizes = () => {
+    const reference = layout.find(item => item.id === selectedIds[0]);
+    if (reference) onLayoutChange(resizeItems(layout, selectedIds, reference, { cols: gridCols, compaction }));
+  };
   const nextId = () => `neu-${dashboard.filter((item) => item.id.startsWith("neu-")).length + 1}`;
   const add = () => onLayoutChange(addItem(dashboard, { id: nextId(), w: 6, h: 4 }, { cols, compaction }));
   const onDrop = useCallback(
@@ -262,15 +274,16 @@ function App() {
 
   return (
     <div className="app">
+      <h1 className="playground-title">l8grid <small>· interaktive Beispieldaten</small></h1>
       <div className="toolbar" ref={toolbar}>
         <div className="segmented">
-          <button aria-pressed={mode === "dashboard"} onClick={() => setMode("dashboard")}>
+          <button aria-pressed={mode === "dashboard"} onClick={() => { setMode("dashboard"); setSelectedIds([]); }}>
             Dashboard
           </button>
-          <button aria-pressed={mode === "responsive"} onClick={() => setMode("responsive")}>
+          <button aria-pressed={mode === "responsive"} onClick={() => { setMode("responsive"); setSelectedIds([]); }}>
             Responsive{breakpoint && mode === "responsive" ? ` · ${breakpoint}` : ""}
           </button>
-          <button aria-pressed={mode === "stress"} onClick={() => setMode("stress")}>
+          <button aria-pressed={mode === "stress"} onClick={() => { setMode("stress"); setSelectedIds([]); }}>
             Stress · {stress[0].length} Tiles
           </button>
         </div>
@@ -356,6 +369,27 @@ function App() {
         )}
         <span className="hint">Ziehen · Griffe am Rand = Größe · Tab + Pfeiltasten (Shift = Größe) · Esc bricht ab</span>
       </div>
+      {mode !== "responsive" && (
+      <section className="finder" aria-label="Kacheln finden und Größen übernehmen">
+        <label>Kachel finden <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Titel durchsuchen" /></label>
+        <span role="status">{matching.length} von {layout.filter(item => !item.static).length} Kacheln</span>
+        <button disabled={selectedIds.length < 2} onClick={matchSizes}>Größe der ersten Auswahl übernehmen</button>
+        <button onClick={() => setSelectedIds([])} disabled={!selectedIds.length}>Auswahl leeren</button>
+        <div className="finder-results">
+          {matching.map(item => <div key={item.id}>
+            <label><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={event => setSelectedIds(ids => event.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />{getItemLabel(item.id)}</label>
+            <button onClick={() => jumpTo(item.id)}>Anzeigen</button>
+          </div>)}
+        </div>
+        {!stressMode && <button onClick={() => {
+          const grid = document.querySelector<HTMLElement>(".l8-grid");
+          if (!grid) return;
+          const targetWidth = Math.min(8, gridCols);
+          const width = (grid.clientWidth - (gridCols - 1) * gap) / gridCols * targetWidth + (targetWidth - 1) * gap;
+          onLayoutChange(resizeItems(layout, selectedIds, { w: targetWidth, h: rowsForAspectRatio(width, 16 / 9, rowHeight, gap) }, { cols: gridCols, compaction }));
+        }} disabled={!selectedIds.length}>Auswahl auf 16:9 annähern</button>}
+      </section>
+      )}
       {mode === "responsive" ? (
         <ResponsiveGrid
           {...shared}
